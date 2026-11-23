@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accesos a edificios</title>
+<style>
+  :root{--bg:#f5f6f4;--panel:#fff;--ink:#1d2a2e;--muted:#5b6a6e;--line:#d6dcdb;--rampa:#1f7a5c;--esc:#b4531a;--accent:#1d4e6b;--err:#b3261e}
+  @media (prefers-color-scheme:dark){:root{--bg:#141a1c;--panel:#1c2427;--ink:#e6ecec;--muted:#9aa9ac;--line:#2f3b3f;--rampa:#4fc39b;--esc:#f0955a;--accent:#7bb6d6;--err:#f2a29d}}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--ink);display:grid;grid-template-columns:minmax(320px,420px) 1fr;height:100vh}
+  aside{background:var(--panel);border-right:1px solid var(--line);overflow:auto;padding:16px}
+  h1{font-size:20px;margin:0 0 12px}
+  h2{font-size:15px;margin:18px 0 8px}
+  #map{height:100%;min-height:300px}
+  label{display:block;font-size:13px;color:var(--muted);margin:8px 0 2px}
+  input,select,button{font:inherit;color:inherit;width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .btns{display:flex;gap:8px;margin-top:12px}
+  button{cursor:pointer;width:auto;flex:1}
+  button.primary{background:var(--accent);color:var(--panel);border-color:var(--accent)}
+  button.danger{color:var(--err)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  ul{list-style:none;margin:0;padding:0}
+  li{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer}
+  li[aria-selected="true"]{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+  li .t{font-weight:600}
+  li .m{color:var(--muted);font-size:13px}
+  .tag{font-size:12px;font-weight:600}
+  .tag.rampa{color:var(--rampa)} .tag.esc{color:var(--esc)}
+  li .acts{display:flex;gap:6px;margin-top:8px}
+  li .acts button{padding:4px 8px;font-size:13px}
+  #msg{min-height:20px;font-size:13px;margin-top:8px}
+  #msg.err{color:var(--err)}
+  @media(max-width:760px){body{grid-template-columns:1fr;grid-template-rows:auto 45vh;height:auto}aside{border-right:0}}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Accesos a edificios</h1>
+
+  <label for="filtro">Filtrar por tipo de entrada</label>
+  <select id="filtro">
+    <option value="">Todos</option>
+    <option value="con rampa">Con rampa</option>
+    <option value="con escalones">Con escalones</option>
+  </select>
+
+  <h2>Puntos</h2>
+  <ul id="lista"></ul>
+  <p id="vacio" hidden>No hay puntos con ese filtro.</p>
+
+  <h2 id="tituloForm">Agregar punto</h2>
+  <div id="form">
+    <input type="hidden" id="id">
+    <label for="nombre">Nombre del punto</label><input id="nombre">
+    <div class="row">
+      <div><label for="lat">Latitud (−90 a 90)</label><input id="lat" inputmode="decimal" placeholder="-25.2800"></div>
+      <div><label for="lng">Longitud (−180 a 180)</label><input id="lng" inputmode="decimal" placeholder="-57.6363"></div>
+    </div>
+    <label for="edificio">Edificio</label><input id="edificio">
+    <label for="calle">Calle de acceso</label><input id="calle">
+    <label for="tipo">Tipo de entrada</label>
+    <select id="tipo"><option value="con rampa">Con rampa</option><option value="con escalones">Con escalones</option></select>
+    <div class="btns">
+      <button class="primary" id="guardar">Guardar punto</button>
+      <button id="cancelar" hidden>Cancelar edición</button>
+    </div>
+    <div id="msg" role="status"></div>
+  </div>
+</aside>
+<div id="map" aria-label="Mapa"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+const C = window.CONFIG;
+const db = supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY);
+const $ = id => document.getElementById(id);
+let puntos = [], seleccionado = null, map, marker, info;
+
+// ---------- Google Maps ----------
+window.initMap = () => {
+  map = new google.maps.Map($("map"), { center: { lat: -25.2867, lng: -57.6333 }, zoom: 12 });
+  info = new google.maps.InfoWindow();
+  cargar();
+};
+const s = document.createElement("script");
+s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(C.GOOGLE_MAPS_API_KEY)}&callback=initMap&loading=async`;
+s.async = true; document.head.appendChild(s);
+
+function mostrarEnMapa(p) {
+  const pos = { lat: p.latitud, lng: p.longitud };  // leído de Supabase
+  if (marker) marker.setMap(null);
+  marker = new google.maps.Marker({ position: pos, map, title: p.nombre });
+  info.setContent(`<strong></strong>`);
+  info.getContent().textContent = p.nombre;
+  info.open(map, marker);
+  map.panTo(pos); map.setZoom(16);
+}
+
+// ---------- Validación ----------
+function validar() {
+  const lat = Number($("lat").value.trim().replace(",", "."));
+  const lng = Number($("lng").value.trim().replace(",", "."));
+  if (!$("nombre").value.trim() || !$("edificio").value.trim() || !$("calle").value.trim())
+    return { error: "Completá nombre, edificio y calle de acceso." };
+  if ($("lat").value.trim() === "" || !Number.isFinite(lat) || lat < -90 || lat > 90)
+    return { error: "Latitud inválida: usá grados decimales entre −90 y 90." };
+  if ($("lng").value.trim() === "" || !Number.isFinite(lng) || lng < -180 || lng > 180)
+    return { error: "Longitud inválida: usá grados decimales entre −180 y 180." };
+  return { datos: {
+    nombre: $("nombre").value.trim(), latitud: lat, longitud: lng,
+    edificio: $("edificio").value.trim(), calle_acceso: $("calle").value.trim(),
+    tipo_entrada: $("tipo").value } };
+}
+function aviso(t, err) { $("msg").textContent = t; $("msg").className = err ? "err" : ""; }
+
+// ---------- CRUD ----------
+async function cargar() {
+  const { data, error } = await db.from("puntos").select("*").order("creado_en");
+  if (error) return aviso("No se pudo leer Supabase: " + error.message, true);
+  puntos = data; render();
+}
+function render() {
+  const f = $("filtro").value;
+  const vis = puntos.filter(p => !f || p.tipo_entrada === f);
+  $("vacio").hidden = vis.length > 0;
+  const ul = $("lista"); ul.replaceChildren();
+  vis.forEach(p => {
+    const li = document.createElement("li");
+    li.setAttribute("aria-selected", p.id === seleccionado);
+    const rampa = p.tipo_entrada === "con rampa";
+    li.innerHTML = `<div class="t"></div><div class="m"></div><span class="tag ${rampa ? "rampa" : "esc"}"></span><div class="acts"><button data-a="e">Editar</button><button data-a="d" class="danger">Eliminar</button></div>`;
+    li.querySelector(".t").textContent = p.nombre;
+    li.querySelector(".m").textContent = `${p.edificio} · ${p.calle_acceso} · ${p.latitud}, ${p.longitud}`;
+    li.querySelector(".tag").textContent = rampa ? "Con rampa" : "Con escalones";
+    li.onclick = e => {
+      const a = e.target.dataset.a;
+      if (a === "e") return editar(p);
+      if (a === "d") return eliminar(p);
+      seleccionado = p.id; render(); mostrarEnMapa(p);
+    };
+    ul.appendChild(li);
+  });
+}
+async function guardar() {
+  const v = validar(); if (v.error) return aviso(v.error, true);
+  const id = $("id").value;
+  const { error } = id ? await db.from("puntos").update(v.datos).eq("id", id)
+                       : await db.from("puntos").insert(v.datos);
+  if (error) return aviso("Error al guardar: " + error.message, true);
+  limpiar(); aviso("Punto guardado."); cargar();
+}
+function editar(p) {
+  $("id").value = p.id; $("nombre").value = p.nombre; $("lat").value = p.latitud; $("lng").value = p.longitud;
+  $("edificio").value = p.edificio; $("calle").value = p.calle_acceso; $("tipo").value = p.tipo_entrada;
+  $("tituloForm").textContent = "Editar punto"; $("cancelar").hidden = false; $("nombre").focus();
+}
+async function eliminar(p) {
+  if (!confirm(`¿Eliminar "${p.nombre}"?`)) return;
+  const { error } = await db.from("puntos").delete().eq("id", p.id);
+  if (error) return aviso("Error al eliminar: " + error.message, true);
+  if (seleccionado === p.id) { seleccionado = null; if (marker) marker.setMap(null); }
+  aviso("Punto eliminado."); cargar();
+}
+function limpiar() {
+  ["id","nombre","lat","lng","edificio","calle"].forEach(k => $(k).value = "");
+  $("tipo").value = "con rampa"; $("tituloForm").textContent = "Agregar punto"; $("cancelar").hidden = true;
+}
+$("guardar").onclick = guardar;
+$("cancelar").onclick = () => { limpiar(); aviso(""); };
+$("filtro").onchange = render;
+</script>
+</body>
+</html>
